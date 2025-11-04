@@ -43,7 +43,7 @@ $$
 L_{\mathrm{pos}} &= \log \sum_{i \in \{\mathrm{joy},\ \mathrm{trust},\ \mathrm{anticipation}\}} e^{z_i} \\
 L_{\mathrm{neg}} &= \log \sum_{j \in \{\mathrm{sadness},\ \mathrm{anger},\ \mathrm{fear},\ \mathrm{disgust}\}} e^{z_j} \\
 p_{\mathrm{pos}} &= \frac{1}{1 + e^{-(L_{\mathrm{pos}} - L_{\mathrm{neg}})}} \\
-s_{\text{text}} &= 2\,p_{\mathrm{pos}} - 1 \quad (-1 \le s_{\text{text}} \le 1)
+s_{\text{text}} &= 2p_{\mathrm{pos}} - 1 \quad (-1 \le s_{\text{text}} \le 1)
 \end{aligned}
 $$
 
