@@ -136,7 +136,7 @@ def get_combined_score(text: str, emoji: str):
 # ============================
 if __name__ == "__main__":
     sample = "今日は友達と会えてとても嬉しい！"
-    emoji = "❤️"
+    emoji = "🙂"
     result = get_combined_score(sample, emoji)
 
     print("\n--- 感情スコア結果 ---")
