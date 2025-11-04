@@ -38,46 +38,45 @@
 WRIME モデルから得られた各感情ロジット値をもとに、  
 **log-sum-exp（LSE）ベース**でポジティブ・ネガティブの代表値を計算します。
 
-\[
-\begin{align}
+```math
 L_{pos} &= \log \sum_{i \in \{joy, trust, anticipation\}} e^{z_i} \\
 L_{neg} &= \log \sum_{j \in \{sadness, anger, fear, disgust\}} e^{z_j} \\
 p_{pos} &= \frac{1}{1 + e^{-(L_{pos} - L_{neg})}} \\
 s_{text} &= 2p_{pos} - 1 \quad (-1 \leq s_{text} \leq 1)
-\end{align}
-\]
+```
+
 
 また、モデル出力の信頼度 `c` は2クラス分布のエントロピーから算出します。
 
-\[
+```math
 c = 1 - \frac{H}{\log 2}, \quad H = -[p_{pos}\log p_{pos} + p_{neg}\log p_{neg}]
-\]
+```
 
 ---
 
 ### ② 重み計算
 テキストの信頼度 `c` に基づき、絵文字とテキストの比重を決定します。
 
-\[
+```math
 w_2 = clip(\alpha \cdot c + \beta, 0, 1)
 \quad , \quad
 w_1 = 1 - w_2
-\]
+```
 
 ---
 
 ### ③ 総合感情スコア（`combined_score`）
 絵文字スコアとテキストスコアを加重平均して総合スコアを得ます。
 
-\[
+```math
 s_{combined} = w_1 \cdot s_{emoji} + w_2 \cdot s_{text}
-\]
+```
 
 最終的に `[-1, 1]` の範囲を `0~100` に再スケーリングして出力します。
 
-\[
+```math
 s_{combined\_100} = \frac{(s_{combined} + 1)}{2} \times 100
-\]
+```
 
 ---
 
