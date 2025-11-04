@@ -38,12 +38,14 @@
 WRIME モデルから得られた各感情ロジット値をもとに、  
 **log-sum-exp（LSE）ベース**でポジティブ・ネガティブの代表値を計算します。
 
-```math
-L_{pos} &= \log \sum_{i \in \{joy, trust, anticipation\}} e^{z_i} \\
-L_{neg} &= \log \sum_{j \in \{sadness, anger, fear, disgust\}} e^{z_j} \\
-p_{pos} &= \frac{1}{1 + e^{-(L_{pos} - L_{neg})}} \\
-s_{text} &= 2p_{pos} - 1 \quad (-1 \leq s_{text} \leq 1)
-```
+$$
+\begin{aligned}
+L_{\mathrm{pos}} &= \log \sum_{i \in \{\mathrm{joy},\ \mathrm{trust},\ \mathrm{anticipation}\}} e^{z_i} \\
+L_{\mathrm{neg}} &= \log \sum_{j \in \{\mathrm{sadness},\ \mathrm{anger},\ \mathrm{fear},\ \mathrm{disgust}\}} e^{z_j} \\
+p_{\mathrm{pos}} &= \frac{1}{1 + e^{-(L_{\mathrm{pos}} - L_{\mathrm{neg}})}} \\
+s_{\text{text}} &= 2\,p_{\mathrm{pos}} - 1 \quad (-1 \le s_{\text{text}} \le 1)
+\end{aligned}
+$$
 
 
 また、モデル出力の信頼度 `c` は2クラス分布のエントロピーから算出します。
