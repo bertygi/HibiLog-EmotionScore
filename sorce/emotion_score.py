@@ -104,6 +104,31 @@ def get_text_sent_score(text: str, anticipation_weight: float = 0.5):
 # combined_score 計算関数
 # ============================
 def get_combined_score(text: str, emoji: str):
+    if text is None or not str(text).strip():
+        emoji_score = EMOJI_SCORE.get(emoji, 0.0)
+
+        # textなし → w2 = 0（完全に絵文字のみで計算）
+        w2 = 0.0
+        w1 = 1.0
+
+        combined = w1 * emoji_score   # = emoji_score
+
+        combined_rescaled = ((combined + 1.0) / 2.0) * 100.0
+        combined_rescaled = float(max(0.0, min(100.0, combined_rescaled)))
+
+        return {
+            "text": text,
+            "emoji": emoji,
+            "emoji_score": round(emoji_score, 3),
+            "text_sent_score": None,
+            "confidence(c)": None,
+            "w1": round(w1, 3),
+            "w2": round(w2, 3),
+            "combined_score": round(combined, 3),
+            "combined_score_100": round(combined_rescaled, 2),
+            "emotion_values": None,
+        }
+
     text_sent_score, c, emotions = get_text_sent_score(text)
 
     # w2 = α*c + β （0~1でクリッピング）
