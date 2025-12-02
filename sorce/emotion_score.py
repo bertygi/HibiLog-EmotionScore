@@ -1,50 +1,169 @@
-# app.py
 # -*- coding: utf-8 -*-
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional
+import torch
+import torch.nn.functional as F
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import math
 
-# emotion_score.py は同じフォルダに置いてください。
-# import 時にモデルがメモリに一度だけロードされるため、推論が高速になります。
-from emotion_score import get_combined_score
+# ============================
+# ハイパーパラメータ
+# ============================
+MODEL_ID = "../bert-ja-wrime"
 
-app = FastAPI(title="Emotion Score API", version="1.0.0")
+ALPHA = 0.5   # w2 = α*c + β
+BETA = 0.2
+EPS = 1e-6
 
-# CORS: 外部の PC やアプリから直接呼び出す場合、許可ドメインを指定してください。
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],           # 本番環境では ["https://your-frontend.example"] など、特定ドメインのみ許可することを推奨
-    allow_credentials=False,
-    allow_methods=["POST", "OPTIONS"],
-    allow_headers=["Content-Type", "Authorization"],
-)
+EMOJI_SCORE = {
+    "愛してる": +0.9,
+    "嬉しい": +0.7,
+    "悲しい": -0.6,
+    "驚き": -0.9,
+    "疲れた": -0.5,
+    "燃える": +0.4,
+    "怒り": -0.8,
+    "いいね": +0.5,
+}
 
-class EmotionRequest(BaseModel):
-    emoji: str = Field(..., description="絵文字（例：🙂, ❤️）")
-    sample: str = Field("", description="分析するテキスト（空でも可）")
+# ============================
+# 感情ラベルの順序（WRIME基準）
+# ============================
+EMOTIONS = ["joy", "sadness", "anticipation", "surprise", "anger", "fear", "disgust", "trust"]
 
-class EmotionResponse(BaseModel):
-    combined_score_100: float = Field(..., ge=0.0, le=100.0, description="[0〜100] のパーセンテージ")
-    # 詳細なデバッグ情報も返したい場合は以下のコメントアウトを解除
-    # detail: dict
+# ============================
+# モデルのロード
+# ============================
+print("モデルを読み込み中...")
+device = "cuda" if torch.cuda.is_available() else "cpu"
+tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+model = AutoModelForSequenceClassification.from_pretrained(MODEL_ID).to(device).eval()
 
-@app.post("/emotion", response_model=EmotionResponse, summary="絵文字＋テキスト → 感情スコア（％）")
-def emotion_endpoint(payload: EmotionRequest):
-    # ====== バリデーション ======
-    if not payload.emoji.strip():
-        raise HTTPException(status_code=400, detail="emoji が空です。")
+# ============================
+# 感情スコア計算関数（LSEベース）
+# ============================
+@torch.inference_mode()
+def get_text_sent_score(text: str, anticipation_weight: float = 0.5):
+    """
+    WRIMEモデルを使用して文の感情スコア（text_sent_score）を算出（log-sum-expベース）
+    - 出力が16の場合（Writer 8 + Reader 8）→ Reader（後半8個）を使用
+    - posグループ: joy, trust, anticipation（重みを適用）
+    - negグループ: sadness, anger, fear, disgust
+    - 代表ロジット L_pos/L_neg = logsumexp(各グループのロジット + log(重み))
+    - p_pos = sigmoid(L_pos - L_neg)
+    - text_sent_score = 2 * p_pos - 1  （範囲: [-1, 1]）
+    - c（信頼度）: 2クラス分布のエントロピーに基づく信頼度（1 - H / log 2）
+    """
+    enc = tokenizer(text, return_tensors="pt", truncation=True, max_length=256).to(device)
+    logits = model(**enc).logits.squeeze(0)  # shape: (8,) または (16,)
 
-    # sample（テキスト）は空でも許容（emotion_score 側で w2=0処理）
+    # 出力が16の場合は後半8個（Reader）を使用、8の場合はそのまま使用
+    if logits.shape[0] == 16:
+        logits = logits[8:16]
+    elif logits.shape[0] != 8:
+        raise RuntimeError(f"出力サイズが想定外です: {logits.shape[0]} （想定は8または16）")
 
-    try:
-        result = get_combined_score(payload.sample, payload.emoji)
-        score = result.get("combined_score_100")
+    # 感情ごとのロジット（softmax前の値）をマッピング
+    emotion_values = {emo: float(logits[i].item()) for i, emo in enumerate(EMOTIONS)}
 
-        if score is None:
-            raise ValueError("combined_score_100 が計算されていません。")
+    # 各感情のロジットを抽出（テンソルのまま保持）
+    joy        = logits[0]
+    sadness    = logits[1]
+    anticipation = logits[2]
+    # surprise  = logits[3]  # 現在はpos/neg計算に使用しない
+    anger      = logits[4]
+    fear       = logits[5]
+    disgust    = logits[6]
+    trust      = logits[7]
 
-        return EmotionResponse(combined_score_100=score)
+    # --------- LSEで代表ロジットを計算 ---------
+    # anticipationの重み0.5はlog空間でlog(0.5)を加算して反映
+    log_w_a = torch.log(torch.tensor(anticipation_weight, device=logits.device))
+    pos_stack = torch.stack([joy, trust, anticipation + log_w_a])  # ポジティブグループ
+    neg_stack = torch.stack([sadness, anger, fear, disgust])       # ネガティブグループ
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"サーバーエラー: {e}")
+    L_pos = torch.logsumexp(pos_stack, dim=0)
+    L_neg = torch.logsumexp(neg_stack, dim=0)
+
+    # 2クラスsoftmax確率（sigmoid(delta)）
+    delta = L_pos - L_neg
+    p_pos = torch.sigmoid(delta)         # ポジティブ確率
+    p_neg = 1.0 - p_pos
+
+    # 連続スコア [-1, 1]
+    text_sent_score = float(2.0 * p_pos.item() - 1.0)
+
+    # 信頼度c: 2クラス分布のエントロピーに基づく（0~1）
+    # H = -Σ p log p, c = 1 - H / log(2)
+    p_pos_clamped = torch.clamp(p_pos, EPS, 1.0 - EPS)  # 数値安定化
+    p_neg_clamped = 1.0 - p_pos_clamped
+    H = -(p_pos_clamped * torch.log(p_pos_clamped) + p_neg_clamped * torch.log(p_neg_clamped))
+    c = float(1.0 - (H.item() / math.log(2.0)))
+
+    return text_sent_score, c, emotion_values
+
+# ============================
+# combined_score 計算関数
+# ============================
+def get_combined_score(text: str, emoji: str):
+    if text is None or not str(text).strip():
+        emoji_score = EMOJI_SCORE.get(emoji, 0.0)
+
+        # textなし → w2 = 0（完全に絵文字のみで計算）
+        w2 = 0.0
+        w1 = 1.0
+
+        combined = w1 * emoji_score   # = emoji_score
+
+        combined_rescaled = ((combined + 1.0) / 2.0) * 100.0
+        combined_rescaled = float(max(0.0, min(100.0, combined_rescaled)))
+
+        return {
+            "text": text,
+            "emoji": emoji,
+            "emoji_score": round(emoji_score, 3),
+            "text_sent_score": None,
+            "confidence(c)": None,
+            "w1": round(w1, 3),
+            "w2": round(w2, 3),
+            "combined_score": round(combined, 3),
+            "combined_score_100": round(combined_rescaled, 2),
+            "emotion_values": None,
+        }
+
+    text_sent_score, c, emotions = get_text_sent_score(text)
+
+    # w2 = α*c + β （0~1でクリッピング）
+    w2 = float(max(0.0, min(1.0, ALPHA * c + BETA)))
+    w1 = 1.0 - w2
+
+    emoji_score = EMOJI_SCORE.get(emoji, 0.0)
+    combined = w1 * emoji_score + w2 * text_sent_score
+
+    # --- 0~100スケールにリスケーリング ---
+    combined_rescaled = ((combined + 1.0) / 2.0) * 100.0
+    combined_rescaled = float(max(0.0, min(100.0, combined_rescaled)))  # 安全なクリッピング
+
+    return {
+        "text": text,
+        "emoji": emoji,
+        "emoji_score": round(emoji_score, 3),
+        "text_sent_score": round(text_sent_score, 3),
+        "confidence(c)": round(c, 3),
+        "w1": round(w1, 3),
+        "w2": round(w2, 3),
+        "combined_score": round(combined, 3),  # [-1, 1]
+        "combined_score_100": round(combined_rescaled, 2),  # [0, 100]
+        "emotion_values": {k: round(v, 3) for k, v in emotions.items()},
+    }
+
+
+# ============================
+# 実行例
+# ============================
+if __name__ == "__main__":
+    sample = "今日は友達と会えてとても嬉しい！"
+    emoji = "🙂"
+    result = get_combined_score(sample, emoji)
+
+    print("\n--- 感情スコア結果 ---")
+    for k, v in result.items():
+        print(f"{k}: {v}")

@@ -22,7 +22,7 @@ app.add_middleware(
 
 class EmotionRequest(BaseModel):
     emoji: str = Field(..., description="絵文字（例：🙂, ❤️）")
-    sample: str = Field(..., description="分析するテキスト")
+    sample: str = Field("", description="分析するテキスト（空でも可）")
 
 class EmotionResponse(BaseModel):
     combined_score_100: float = Field(..., ge=0.0, le=100.0, description="[0〜100] のパーセンテージ")
@@ -31,19 +31,20 @@ class EmotionResponse(BaseModel):
 
 @app.post("/emotion", response_model=EmotionResponse, summary="絵文字＋テキスト → 感情スコア（％）")
 def emotion_endpoint(payload: EmotionRequest):
-    # 簡易なバリデーション
+    # ====== バリデーション ======
     if not payload.emoji.strip():
         raise HTTPException(status_code=400, detail="emoji が空です。")
-    if not payload.sample.strip():
-        raise HTTPException(status_code=400, detail="sample が空です。")
+
+    # sample（テキスト）は空でも許容（emotion_score 側で w2=0処理）
 
     try:
         result = get_combined_score(payload.sample, payload.emoji)
         score = result.get("combined_score_100")
+
         if score is None:
             raise ValueError("combined_score_100 が計算されていません。")
+
         return EmotionResponse(combined_score_100=score)
-        # 詳細情報を返却したい場合（例）
-        # return {"combined_score_100": score, "detail": result}
+
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"サーバーエラー: {e}")
